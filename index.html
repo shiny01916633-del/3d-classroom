@@ -138,7 +138,26 @@ a.btn{text-decoration:none;color:inherit;display:inline-block}
 .qcard{min-width:0}
 .exam[data-per="2"] .qcard,.exam[data-per="4"] .qcard{border:1px solid var(--line);border-radius:10px;padding:1rem 1.1rem}
 .exam[data-per="2"] .qcard.cur,.exam[data-per="4"] .qcard.cur{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
-.exam[data-per="4"] .qfig img{max-height:220px}
+/* Fit the screen: tighter spacing when several questions share a screen, and if it still overflows,
+   step the text down a little (data-fit 1~3) so the whole screen fits without scrolling */
+.exam{--fit:1;--imgh:300px}
+.exam[data-per="2"]{--imgh:200px}
+.exam[data-per="4"]{--imgh:140px}
+.exam[data-fit="1"]{--fit:.92} .exam[data-fit="2"]{--fit:.85} .exam[data-fit="3"]{--fit:.78}
+.exam .qpane{min-height:0;padding:1rem 1.2rem}
+.exam .qtext{font-size:calc(var(--qsize)*var(--fit));margin-bottom:.6rem;line-height:1.55}
+.exam .qbox{font-size:calc(var(--qsize)*.92*var(--fit));padding:.5rem .75rem;margin-bottom:.6rem}
+.exam .qfig{margin-bottom:.6rem;padding:.35rem}
+.exam .qfig img{max-height:calc(var(--imgh)*var(--fit))}
+.exam .qsrc{margin-bottom:.45rem}
+.exam .qno{font-size:calc(1.15rem*var(--fit))}
+.exam .choices{gap:calc(.4rem*var(--fit))}
+.exam .choice{font-size:calc(var(--qsize)*var(--fit));padding:calc(.45rem*var(--fit)) .7rem;line-height:1.42}
+.exam .choices.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.exam .exam-body .wrap{padding-block:.6rem}
+.exam[data-per="2"] .qgrid,.exam[data-per="4"] .qgrid{gap:.7rem}
+.exam[data-per="2"] .qcard,.exam[data-per="4"] .qcard{padding:.7rem .85rem}
+.exam[data-per="4"] .qsrc .pill{font-size:.72rem}
 .qsrc{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.8rem}
 .qno{font-family:var(--f-mono);font-weight:600;font-size:1.25rem;color:var(--omr)}
 .qtext{font-size:var(--qsize);font-weight:500;margin:0 0 1rem;line-height:1.65;word-break:keep-all}
@@ -559,7 +578,7 @@ function pushDraft(closing){
 }
 window.addEventListener("pagehide",()=>{if(S.view==="exam"&&S.exam){saveDraft();pushDraft(true)}});
 function updateTimer(){const t=document.getElementById("timer");if(!t||!S.exam)return;t.textContent=fmtTime(S.exam.remain);t.classList.toggle("low",S.exam.remain<300);const a=document.getElementById("answered");if(a)a.textContent=S.exam.answers.filter(Boolean).length+" / "+S.exam.qs.length}
-function setSize(sz){if(sz==="m")document.documentElement.removeAttribute("data-qsize");else document.documentElement.setAttribute("data-qsize",sz);lsSet("cbt-size",sz);document.querySelectorAll(".sizebtns button[data-sz]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.sz===sz)))}
+function setSize(sz){if(sz==="m")document.documentElement.removeAttribute("data-qsize");else document.documentElement.setAttribute("data-qsize",sz);lsSet("cbt-size",sz);document.querySelectorAll(".sizebtns button[data-sz]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.sz===sz)));if(S.view==="exam")fitScreen()}
 function renderExam(){
   const ex=S.exam,part=S.partById[ex.n];
   const sz=lsGet("cbt-size")||"m";
@@ -605,7 +624,9 @@ function setPer(p){
 }
 function qCard(i){
   const ex=S.exam,q=ex.qs[i];
-  const list=el("div",{class:"choices",role:"radiogroup","aria-label":(i+1)+"번 보기"});
+  /* Short answer choices sit two per line to save height */
+  const short=q.c.every(t=>String(t).length<=14);
+  const list=el("div",{class:"choices"+(short?" two":""),role:"radiogroup","aria-label":(i+1)+"번 보기"});
   q.c.forEach((txt,k)=>{list.append(el("button",{class:"choice",type:"button",role:"radio","data-i":i,"data-k":k+1,"aria-checked":String(ex.answers[i]===k+1),onclick:()=>{ex.idx=i;mark(i,k+1)}},el("span",{class:"num",text:String(k+1)}),el("span",{text:txt})))});
   return el("article",{class:"qcard","data-i":i,onclick:()=>{if(ex.idx!==i){ex.idx=i;saveDraft();markCurrent()}}},
     el("div",{class:"qsrc"},el("span",{class:"qno",text:(i+1)+"."}),el("span",{class:"pill plain",text:q.y+"년 기출 "+q.n+"번"})),
@@ -619,6 +640,9 @@ function renderQuestion(){
     const cards=[];for(let i=start;i<end;i++)cards.push(qCard(i));
     pane.replaceChildren(el("div",{class:"qgrid"},cards));
     S.shownStart=start;S.shownPer=p;
+    window.scrollTo(0,0);
+    fitScreen();
+    pane.querySelectorAll("img").forEach(img=>{if(!img.complete)img.addEventListener("load",fitScreen,{once:true})});
   }
   document.getElementById("prev").disabled=start===0;
   document.getElementById("next").disabled=end>=ex.qs.length;
@@ -631,6 +655,24 @@ function markCurrent(){
   const cur=document.querySelector('.omr-row[data-i="'+ex.idx+'"]');
   if(cur){const list=document.getElementById("omr-list");const top=cur.offsetTop-list.offsetTop;if(top<list.scrollTop||top>list.scrollTop+list.clientHeight-30)list.scrollTop=top-60}
 }
+/* If the questions don't fit in the window, make the text a little smaller (up to 3 steps). Phones just scroll. */
+function fitScreen(){
+  const e=document.getElementById("exam"),pane=document.getElementById("qpane"),omr=document.getElementById("omr");if(!e||!pane)return;
+  const foot=e.querySelector(".exam-foot");
+  const docTop=n=>n.getBoundingClientRect().top+window.scrollY;
+  /* The exam fills the window below the top bar (not a full extra window height) */
+  let mh=Math.max(0,window.innerHeight-docTop(e));e.style.minHeight=mh+"px";
+  const extra=document.documentElement.scrollHeight-window.innerHeight;
+  if(extra>0&&extra<40&&e.offsetHeight<=mh+1)e.style.minHeight=(mh-extra)+"px";
+  e.setAttribute("data-fit","0");
+  if(window.innerWidth<860){if(omr)omr.style.maxHeight="";return}
+  const limit=window.innerHeight-(foot?foot.offsetHeight:0)-30;
+  if(omr)omr.style.maxHeight=Math.max(200,limit-docTop(omr))+"px";
+  const over=()=>pane.getBoundingClientRect().bottom+window.scrollY>limit;
+  for(let lv=1;lv<=3&&over();lv++)e.setAttribute("data-fit",String(lv));
+}
+let fitTimer=null;
+window.addEventListener("resize",()=>{clearTimeout(fitTimer);fitTimer=setTimeout(()=>{if(S.view==="exam")fitScreen()},150)});
 function refreshChoices(i){const a=S.exam.answers[i];document.querySelectorAll('.choice[data-i="'+i+'"]').forEach(b=>b.setAttribute("aria-checked",String(+b.dataset.k===a)))}
 function goPage(d){const ex=S.exam,p=perPage();go(d<0?pageStart(ex.idx)-p:pageStart(ex.idx)+p)}
 function refreshOmr(){
