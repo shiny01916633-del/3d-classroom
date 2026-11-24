@@ -314,6 +314,12 @@ function el(tag,attrs,...kids){const e=document.createElement(tag);if(attrs)for(
 function lsGet(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch(e){return null}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 function lsDel(k){try{localStorage.removeItem(k)}catch(e){}}
+/* Name and invite code live only while this window is open: closing the window means entering the code again */
+function ssGet(k){try{const v=sessionStorage.getItem(k);return v?JSON.parse(v):null}catch(e){return null}}
+function ssSet(k,v){try{sessionStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+function ssDel(k){try{sessionStorage.removeItem(k)}catch(e){}}
+/* Unfinished quizzes are kept per student name, so several students can share one computer */
+function draftKey(id){return "cbt-draft-"+normName(studentName())+"-"+id}
 function fmtTime(s){s=Math.max(0,Math.floor(s));const m=Math.floor(s/60),r=s%60;return String(m).padStart(2,"0")+":"+String(r).padStart(2,"0")}
 function fmtDate(iso){if(!iso)return "";const d=new Date(iso);if(isNaN(d))return "";return (d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")}
 function qid(q){return q.y+"-"+q.n}
@@ -325,7 +331,7 @@ function modal(title,body,buttons){
   modalRoot.append(el("div",{class:"modal"},box));
   const last=box.querySelector(".row button:last-child");last&&last.focus();
 }
-function studentName(){return (lsGet("cbt-name")||"").trim()}
+function studentName(){return (ssGet("cbt-name")||"").trim()}
 
 /* ---------- figure / question rendering ---------- */
 function qBlocks(q){
@@ -345,7 +351,7 @@ function whoBox(){
     el("div",{},el("button",{class:"btn sm",type:"button",onclick:logout,text:"이름·코드 다시 입력"})));
 }
 function logout(){
-  modal("처음 입장 화면으로 갈까요?","이름이나 초대코드를 다시 입력할 수 있어요. 풀던 문제는 이 기기에 그대로 남아 있어요.",[{label:"취소"},{label:"다시 입력",cls:"primary",on:()=>{lsDel("cbt-code");S.code=null;S.role=null;S.isTeacher=false;S.mine=null;S.subs=null;renderGate()}}]);
+  modal("처음 입장 화면으로 갈까요?","이름이나 초대코드를 다시 입력할 수 있어요. 같은 이름으로 다시 들어오면 제출한 점수와 풀던 문제가 이어서 나와요.",[{label:"취소"},{label:"다시 입력",cls:"primary",on:()=>{ssDel("cbt-code");S.code=null;S.role=null;S.isTeacher=false;S.mine=null;S.subs=null;renderGate()}}]);
 }
 /* ---------- ENTRY (invite code) ---------- */
 function renderGate(msg,mode){
@@ -380,7 +386,7 @@ function renderGate(msg,mode){
     if(!r||!r.role){err.textContent=teacherMode?"선생님 코드가 맞지 않아요. 다시 확인해 주세요.":"초대코드가 맞지 않아요. 다시 확인해 주세요.";codeI.select();return}
     if(teacherMode&&r.role!=="teacher"){err.textContent="학생 초대코드예요. 위에서 ‘학생’을 골라 주세요.";return}
     if(!teacherMode&&r.role==="teacher"){err.textContent="선생님 코드예요. 위에서 ‘선생님’을 골라 주세요.";return}
-    lsSet("cbt-name",name);lsSet("cbt-code",code);
+    ssSet("cbt-name",name);ssSet("cbt-code",code);
     enter(code,r.role,r.qs);
     if(r.role==="teacher"){renderTeacher()}
   });
@@ -417,7 +423,25 @@ function summarize(rows){
 async function loadMine(){
   if(!S.code)return;
   try{const rows=await api("myResults",S.code,studentName());S.mine={ch:summarize(rows)};rerenderList()}
-  catch(e){if(e&&/CODE/.test(e.message||""))codeExpired()}
+  catch(e){if(e&&/CODE/.test(e.message||""))codeExpired();return}
+  loadDrafts();
+}
+/* Unfinished quizzes saved on Google under this name → bring them to this computer (the newer copy wins) */
+async function loadDrafts(){
+  let list;
+  try{list=await api("myDrafts",S.code,studentName())}catch(e){console.warn("draft load failed",e);return}
+  let changed=false;
+  /* A quiz submitted later on another computer → drop this computer's older unfinished copy */
+  for(const id in (S.mine&&S.mine.ch)||{}){const l=lsGet(draftKey(id));if(l&&(l.saved||0)<new Date(S.mine.ch[id].submittedAt).getTime()){lsDel(draftKey(id));changed=true}}
+  for(const d of list||[]){
+    const p=S.partById[d.setId];if(!p||S.mine&&S.mine.ch&&S.mine.ch[d.setId]&&new Date(S.mine.ch[d.setId].submittedAt).getTime()>=d.saved)continue;
+    const local=lsGet(draftKey(d.setId));
+    if(local&&(local.saved||0)>=d.saved)continue;
+    const answers=String(d.answers||"").padEnd(p.qs.length,"0").slice(0,p.qs.length).split("").map(Number);
+    lsSet(draftKey(d.setId),{answers,idx:Math.min(d.idx||0,p.qs.length-1),remain:Math.max(1,Number(d.remain)||p.time),started:Date.now(),saved:d.saved});
+    changed=true;
+  }
+  if(changed)rerenderList();
 }
 async function loadAll(){
   if(!S.isTeacher)return;
@@ -427,13 +451,13 @@ async function loadAll(){
   S.subsLoading=false;
   if(S.view==="teacher")renderTeacher();
 }
-function codeExpired(){lsDel("cbt-code");S.code=null;S.role=null;S.isTeacher=false;if(S.view!=="exam")renderGate("초대코드가 바뀌었어요. 선생님께 새 코드를 받아 다시 입장하세요.")}
+function codeExpired(){ssDel("cbt-code");S.code=null;S.role=null;S.isTeacher=false;if(S.view!=="exam")renderGate("초대코드가 바뀌었어요. 선생님께 새 코드를 받아 다시 입장하세요.")}
 function introBlock(title,text){
   return el("section",{class:"intro"},el("div",{},el("h1",{text:title}),el("p",{class:"muted",text:text})),whoBox());
 }
 function stateOf(p){
   const mine=S.mine&&S.mine.ch&&S.mine.ch[p.id];
-  const draft=lsGet("cbt-draft-"+p.id);
+  const draft=lsGet(draftKey(p.id));
   let state;
   if(mine) state=el("span",{class:"pill "+(mine.score>=PASS?"ok":"bad")},"제출 · ",el("span",{class:"score-chip",text:mine.score+"점"}));
   else if(draft) state=el("span",{class:"pill warn",text:"푸는 중 "+draft.answers.filter(Boolean).length+"/"+p.qs.length});
@@ -502,7 +526,7 @@ function startExam(id){
   if(!studentName()){
     modal("이름을 먼저 입력하세요","선생님이 누구의 답안인지 알 수 있도록 이름(학년·반·번호)을 입력한 뒤 시작해 주세요.",[{label:"확인",cls:"primary",on:()=>renderGate()}]);return;
   }
-  const draft=lsGet("cbt-draft-"+n);
+  const draft=lsGet(draftKey(n));
   const total=part.time;
   let ex;
   if(draft&&draft.answers&&draft.answers.length===qs.length){ex={n,qs,answers:draft.answers,idx:draft.idx||0,remain:draft.remain,started:draft.started||Date.now()}}
@@ -511,9 +535,19 @@ function startExam(id){
   renderExam();
   clearInterval(S.tick);
   let last=Date.now();
-  S.tick=setInterval(()=>{const now=Date.now();ex.remain-=(now-last)/1000;last=now;updateTimer();if(Math.floor(ex.remain)%5===0)saveDraft();if(ex.remain<=0){clearInterval(S.tick);ex.remain=0;submitExam(true)}},1000);
+  S.tick=setInterval(()=>{const now=Date.now();ex.remain-=(now-last)/1000;last=now;updateTimer();if(Math.floor(ex.remain)%5===0)saveDraft();if(Math.floor(ex.remain)%60===0)pushDraft();if(ex.remain<=0){clearInterval(S.tick);ex.remain=0;submitExam(true)}},1000);
 }
-function saveDraft(){const ex=S.exam;if(!ex)return;lsSet("cbt-draft-"+ex.n,{answers:ex.answers,idx:ex.idx,remain:ex.remain,started:ex.started})}
+function saveDraft(){const ex=S.exam;if(!ex)return;lsSet(draftKey(ex.n),{answers:ex.answers,idx:ex.idx,remain:ex.remain,started:ex.started,saved:Date.now()})}
+/* Also keep the unfinished quiz on Google (about once a minute, on "나중에 이어 풀기", and when the window closes),
+   so the same name can carry on from another computer */
+function pushDraft(closing){
+  const ex=S.exam;if(!ex||!S.code)return;
+  const d={name:studentName(),setId:ex.n,answers:ex.answers.join(""),idx:ex.idx,remain:Math.round(ex.remain),saved:Date.now()};
+  const sig=d.setId+"|"+d.answers+"|"+d.idx+"|"+d.remain;if(sig===S.lastPush)return;S.lastPush=sig;
+  if(closing&&API_URL){try{fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({fn:"saveDraft",args:[S.code,d]}),credentials:"omit",keepalive:true})}catch(e){}return}
+  api("saveDraft",S.code,d).catch(e=>console.warn("draft save failed",e));
+}
+window.addEventListener("pagehide",()=>{if(S.view==="exam"&&S.exam){saveDraft();pushDraft(true)}});
 function updateTimer(){const t=document.getElementById("timer");if(!t||!S.exam)return;t.textContent=fmtTime(S.exam.remain);t.classList.toggle("low",S.exam.remain<300);const a=document.getElementById("answered");if(a)a.textContent=S.exam.answers.filter(Boolean).length+" / "+S.exam.qs.length}
 function setSize(sz){if(sz==="m")document.documentElement.removeAttribute("data-qsize");else document.documentElement.setAttribute("data-qsize",sz);lsSet("cbt-size",sz);document.querySelectorAll(".sizebtns button").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.sz===sz)))}
 function renderExam(){
@@ -540,7 +574,7 @@ function renderExam(){
     el("button",{class:"btn",type:"button",onclick:goUnanswered,text:"안 푼 문제"}),
     el("button",{class:"btn omr-toggle",type:"button",onclick:()=>document.getElementById("omr").classList.add("open"),text:"답안 표기란"}),
     el("div",{class:"spacer"}),
-    el("button",{class:"btn",type:"button",onclick:()=>{saveDraft();clearInterval(S.tick);const back=S.partById[ex.n].mock?"mocks":"chapters";S.exam=null;goList(back);toast("푼 곳까지 저장했어요. ‘이어 풀기’로 계속할 수 있어요.")},text:"나중에 이어 풀기"}),
+    el("button",{class:"btn",type:"button",onclick:()=>{saveDraft();pushDraft();clearInterval(S.tick);const back=S.partById[ex.n].mock?"mocks":"chapters";S.exam=null;goList(back);toast("푼 곳까지 저장했어요. ‘이어 풀기’로 계속할 수 있어요.")},text:"나중에 이어 풀기"}),
     el("button",{class:"btn omr",type:"button",onclick:confirmSubmit,text:"답안 제출"})));
   app.replaceChildren(el("div",{class:"exam"},head,el("div",{class:"exam-body"},el("div",{class:"wrap"},qpane,omr)),foot));
   setSize(sz);
@@ -605,7 +639,7 @@ async function saveResult(r){
     r.saved="ok";
     r.score=res.score;r.correct=res.correct;r.total=res.total;
     r.qs=r.qs.map((q,i)=>Object.assign({},q,{a:res.key[i],e:res.exp[i]}));
-    lsDel("cbt-draft-"+r.n);
+    try{localStorage.removeItem("cbt-draft-"+normName(r.payload.name)+"-"+r.n)}catch(e){}
     const ch=(S.mine&&S.mine.ch)||{};const prev=ch[r.payload.setId];
     ch[r.payload.setId]={score:r.score,correct:r.correct,total:r.total,answers:r.payload.answers,durationSec:r.payload.durationSec,submittedAt:new Date().toISOString(),attempts:(prev?prev.attempts:0)+1,best:Math.max(r.score,prev?prev.best:0)};
     S.mine={ch};
@@ -795,11 +829,13 @@ setInterval(()=>{if(S.view==="teacher"&&S.isTeacher&&!S.subsLoading&&!document.h
 /* ---------- boot ---------- */
 async function boot(){
   const sz=lsGet("cbt-size");if(sz&&sz!=="m")document.documentElement.setAttribute("data-qsize",sz);
-  /* Remembered code on this device → check it again quietly and load the questions, else show the entry screen */
-  const code=lsGet("cbt-code");
+  /* Older versions remembered the code on the device forever; forget it */
+  lsDel("cbt-code");lsDel("cbt-name");
+  /* Code is kept only for this open window (so a refresh keeps you in); a new window shows the entry screen */
+  const code=ssGet("cbt-code");
   if(!code)return renderGate();
   app.replaceChildren(el("div",{class:"wrap home"},el("p",{class:"muted",text:"문제를 불러오는 중…"})));
-  try{const r=await api("enterClass",code);if(r&&r.role)return enter(code,r.role,r.qs);lsDel("cbt-code");renderGate("초대코드가 바뀌었어요. 선생님께 새 코드를 받아 다시 입장하세요.")}
+  try{const r=await api("enterClass",code);if(r&&r.role)return enter(code,r.role,r.qs);ssDel("cbt-code");renderGate("초대코드가 바뀌었어요. 선생님께 새 코드를 받아 다시 입장하세요.")}
   catch(e){renderGate("연결이 잠깐 끊겼어요. 다시 입장해 주세요.")}
 }
 boot();
