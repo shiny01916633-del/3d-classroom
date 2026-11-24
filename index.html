@@ -79,6 +79,7 @@ h1,h2,h3{font-family:var(--f-head);text-wrap:balance;margin:0;line-height:1.3}
 .part .ptop{display:flex;justify-content:space-between;align-items:baseline;gap:.4rem}
 .part .pfoot{display:flex;justify-content:space-between;align-items:center;gap:.4rem;flex-wrap:wrap}
 .btn.sm{padding:.3rem .7rem;font-size:.85rem}
+.btnpair{display:inline-flex;gap:.35rem;flex-wrap:wrap;justify-content:flex-end}
 a.btn{text-decoration:none;color:inherit;display:inline-block}
 .gatewrap{display:grid;place-items:center;min-height:calc(100vh - 60px);padding-block:2rem}
 .gate{background:var(--paper);border:1px solid var(--line);border-top:5px solid var(--omr);border-radius:var(--radius);padding:1.6rem 1.5rem;width:100%;max-width:420px;display:grid;gap:.55rem}
@@ -492,7 +493,9 @@ function stateOf(p){
   else if(draft) state=el("span",{class:"pill warn",text:"푸는 중 "+draft.answers.filter(Boolean).length+"/"+p.qs.length});
   else state=el("span",{class:"pill plain",text:"안 풀었어요"});
   const label=draft?"이어 풀기":(mine?"다시 풀기":"시작");
-  return {mine,draft,state,btn:el("button",{class:"btn primary sm",type:"button","aria-label":partLabel(p)+" "+label,onclick:()=>startExam(p.id)},label)};
+  const main=el("button",{class:"btn primary sm",type:"button","aria-label":partLabel(p)+" "+label,onclick:()=>startExam(p.id)},label);
+  const btn=draft?el("span",{class:"btnpair"},el("button",{class:"btn sm",type:"button","aria-label":partLabel(p)+" 풀이 취소",onclick:()=>cancelDraft(p)},"취소"),main):main;
+  return {mine,draft,state,btn};
 }
 function rerenderList(){if(S.view==="home")renderHome();else if(S.view==="chapters")renderChapters();else if(S.view==="mocks")renderMocks()}
 function goList(v){S.result=null;window.scrollTo(0,0);if(v==="chapters")renderChapters();else if(v==="mocks")renderMocks();else renderHome()}
@@ -567,7 +570,7 @@ function startExam(id){
   S.tick=setInterval(()=>{const now=Date.now();ex.remain-=(now-last)/1000;last=now;updateTimer();if(Math.floor(ex.remain)%5===0)saveDraft();if(Math.floor(ex.remain)%60===0)pushDraft();if(ex.remain<=0){clearInterval(S.tick);ex.remain=0;submitExam(true)}},1000);
 }
 function saveDraft(){const ex=S.exam;if(!ex)return;lsSet(draftKey(ex.n),{answers:ex.answers,idx:ex.idx,remain:ex.remain,started:ex.started,saved:Date.now()})}
-/* Also keep the unfinished quiz on Google (about once a minute, on "나중에 이어 풀기", and when the window closes),
+/* Also keep the unfinished quiz on Google (about once a minute, on "이어 풀기로 저장", and when the window closes),
    so the same name can carry on from another computer */
 function pushDraft(closing){
   const ex=S.exam;if(!ex||!S.code)return;
@@ -605,11 +608,34 @@ function renderExam(){
     el("button",{class:"btn",type:"button",onclick:goUnanswered,text:"안 푼 문제"}),
     el("button",{class:"btn omr-toggle",type:"button",onclick:()=>document.getElementById("omr").classList.add("open"),text:"답안 표기란"}),
     el("div",{class:"spacer"}),
-    el("button",{class:"btn",type:"button",onclick:()=>{saveDraft();pushDraft();clearInterval(S.tick);const back=S.partById[ex.n].mock?"mocks":"chapters";S.exam=null;goList(back);toast("푼 곳까지 저장했어요. ‘이어 풀기’로 계속할 수 있어요.")},text:"나중에 이어 풀기"}),
+    el("button",{class:"btn",type:"button",onclick:exitExam,text:"나가기"}),
     el("button",{class:"btn omr",type:"button",onclick:confirmSubmit,text:"답안 제출"})));
   app.replaceChildren(el("div",{class:"exam",id:"exam","data-per":String(perPage())},head,el("div",{class:"exam-body"},el("div",{class:"wrap"},qpane,omr)),foot));
   setSize(sz);
   S.shownStart=null;renderQuestion();refreshOmr();updateTimer();
+}
+/* Leaving mid-quiz: keep the answers for later, or cancel (throw them away and start fresh next time) */
+function exitExam(){
+  modal("문제 풀이를 그만할까요?",
+    "‘이어 풀기로 저장’을 누르면 나중에 푼 곳부터 계속할 수 있어요. ‘풀이 취소’를 누르면 지금까지 표기한 답이 지워지고, 다음에 처음부터 다시 풀어요.",
+    [{label:"계속 풀기"},{label:"풀이 취소",on:()=>leaveExam(false)},{label:"이어 풀기로 저장",cls:"primary",on:()=>leaveExam(true)}]);
+}
+function leaveExam(keep){
+  const ex=S.exam;if(!ex)return;
+  clearInterval(S.tick);
+  if(keep){saveDraft();pushDraft()}else discardDraft(ex.n);
+  const back=S.partById[ex.n].mock?"mocks":"chapters";
+  S.exam=null;goList(back);
+  toast(keep?"푼 곳까지 저장했어요. ‘이어 풀기’로 계속할 수 있어요.":"풀이를 취소했어요. 다음에 처음부터 풀 수 있어요.");
+}
+/* Remove an unfinished quiz from this computer and from Google */
+function discardDraft(id){
+  lsDel(draftKey(id));S.lastPush=null;
+  if(S.code)api("deleteDraft",S.code,{name:studentName(),setId:id}).catch(e=>console.warn("draft delete failed",e));
+}
+function cancelDraft(p){
+  modal("풀던 문제를 취소할까요?",partLabel(p)+"에서 지금까지 표기한 답이 지워지고, 처음부터 다시 풀게 돼요. 제출한 점수는 지워지지 않아요.",
+    [{label:"아니요"},{label:"풀이 취소",cls:"primary",on:()=>{discardDraft(p.id);rerenderList();toast("풀이를 취소했어요.")}}]);
 }
 function closeOmr(){const o=document.getElementById("omr");o&&o.classList.remove("open")}
 /* Questions per screen: 1, 2 or 4, remembered on this computer */
@@ -703,6 +729,7 @@ function confirmSubmit(){
 }
 async function submitExam(timeUp){
   const ex=S.exam;if(!ex)return;clearInterval(S.tick);
+  modalRoot.replaceChildren();
   saveDraft();
   const durationSec=Math.round(S.partById[ex.n].time-ex.remain);
   /* Grading happens on the Google side; the page only knows the answers after submitting */
